@@ -33,6 +33,10 @@ export default function App() {
     setAiText("");
     setResult(null);
 
+    // 1. Get the URLs from the environment configuration
+    const NODE_SERVER = import.meta.env.VITE_NODE_SERVER_URL;
+    const PYTHON_SERVER = import.meta.env.VITE_PYTHON_SERVER_URL;
+
     try {
       let pageContent = "Mock content for local testing.";
       const isExtension = typeof chrome !== "undefined" && chrome.tabs;
@@ -54,13 +58,15 @@ export default function App() {
         }
       }
 
-      const nodeRes = await axios.post("http://localhost:5000/api/scan", {
+      // 2. Use the Node Server environment variable
+      const nodeRes = await axios.post(`${NODE_SERVER}/api/scan`, {
         url: currentTab.url,
       });
       setResult({ ...nodeRes.data });
 
+      // 3. Use the Python Server environment variable
       const pythonStreamResponse = await fetch(
-        "http://localhost:8000/api/ai-analyze",
+        `${PYTHON_SERVER}/api/ai-analyze`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

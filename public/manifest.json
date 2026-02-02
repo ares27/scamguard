@@ -27,6 +27,8 @@
   "host_permissions": [
     "http://localhost:5000/*",
     "http://localhost:8000/*",
+    "https://scamguard-expressapi.onrender.com",
+    "https://scamguard-py.onrender.com",
     "<all_urls>"
   ]
 }
