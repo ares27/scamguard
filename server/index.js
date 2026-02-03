@@ -10,6 +10,10 @@ app.use(express.json());
 
 app.post("/api/scan", async (req, res) => {
   const { url } = req.body;
+  // 1. Fetch HTML once for all analysis
+  const { data: htmlBody } = await axios
+    .get(url, { timeout: 5000 })
+    .catch(() => ({ data: "" }));
 
   try {
     const domain = new URL(url).hostname.replace("www.", "");
@@ -37,6 +41,7 @@ app.post("/api/scan", async (req, res) => {
     const [trustData, age] = await Promise.all([
       getTrustpilotData(domain),
       getDomainAge(domain),
+      detectHotlinking(url, htmlBody),
     ]);
 
     // 3. Technical vs Social Risk Logic
@@ -45,6 +50,11 @@ app.post("/api/scan", async (req, res) => {
     let warnings = [];
 
     // Prioritize Social Score for the "High Risk" verdict
+    if (hotlinkData.isHotlinking) {
+      warnings.push(
+        `Infrastructure Alert: This site is pulling assets from ${hotlinkData.details[0].domain}. This is typical of cloned phishing sites.`,
+      );
+    }
     if (trustData.score > 0 && trustData.score < 2.5) {
       overallRisk = "High";
       warnings.push(
@@ -68,6 +78,7 @@ app.post("/api/scan", async (req, res) => {
       reviews: trustData.reviews,
       age,
       malicious: "None Detected",
+      hotlinkData,
       warnings,
     });
   } catch (error) {

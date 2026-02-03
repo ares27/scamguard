@@ -111,4 +111,63 @@ async function getDomainAge(domain) {
   }
 }
 
-module.exports = { getTrustpilotData, getDomainAge };
+async function detectHotlinking(url, htmlContent) {
+  try {
+    const $ = cheerio.load(htmlContent);
+    const targetHostname = new URL(url).hostname.replace("www.", "");
+
+    let externalAssets = [];
+    let hotlinkScore = 0;
+
+    $("img").each((i, el) => {
+      const src = $(el).attr("src");
+      if (!src) return;
+
+      try {
+        const assetUrl = new URL(src, url); // Handles relative paths automatically
+        const assetHostname = assetUrl.hostname.replace("www.", "");
+
+        // If the image is hosted on a DIFFERENT domain and it's not a common CDN
+        if (assetHostname !== targetHostname && !isCommonCDN(assetHostname)) {
+          externalAssets.push({
+            src: src,
+            provider: assetHostname,
+          });
+        }
+      } catch (e) {
+        // Skip invalid URLs
+      }
+    });
+
+    // A site with > 3 images hotlinked from a single external
+    // authority domain is highly suspicious of being a clone.
+    const providers = externalAssets.map((a) => a.provider);
+    const uniqueProviders = [...new Set(providers)];
+
+    return {
+      isHotlinking: externalAssets.length > 3,
+      details: uniqueProviders
+        .map((p) => ({
+          domain: p,
+          count: providers.filter((x) => x === p).length,
+        }))
+        .sort((a, b) => b.count - a.count),
+    };
+  } catch (err) {
+    return { isHotlinking: false, details: [] };
+  }
+}
+
+// Simple helper to avoid flagging Google/Amazon/FB tracking pixels
+function isCommonCDN(hostname) {
+  const cdns = [
+    "google.com",
+    "gstatic.com",
+    "facebook.com",
+    "cloudfront.net",
+    "akamaihd.net",
+  ];
+  return cdns.some((cdn) => hostname.includes(cdn));
+}
+
+module.exports = { getTrustpilotData, getDomainAge, detectHotlinking };

@@ -10,78 +10,187 @@ export default function App() {
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [aiText, setAiText] = useState("");
+  const [lastScanned, setLastScanned] = useState<string | null>(null);
 
+  // 1. Update the tab info whenever the user switches tabs
+  // SINGLE SOURCE OF TRUTH FOR TAB CHANGES
   useEffect(() => {
-    const fetchTab = () => {
-      if (typeof chrome !== "undefined" && chrome.tabs) {
+    if (typeof chrome !== "undefined" && chrome.tabs) {
+      const handleTabChange = () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]) setCurrentTab(tabs[0]);
+          if (tabs[0]) {
+            // 1. Update the "Target Info" header
+            setCurrentTab(tabs[0]);
+
+            // 2. Clear out the previous scan results (Prevent Stale Data)
+            setResult(null);
+            setAiText("");
+            setLoading(false); // Stop any lingering pulse animations
+
+            // 3. Reset the browser icon to the neutral state
+            chrome.action.setIcon({ path: "icons/icon-default.png" });
+            chrome.action.setBadgeText({ text: "" });
+          }
         });
-      } else {
-        setCurrentTab({
-          title: "Home | Green Card Organization",
-          url: "https://greencardorganization.com",
-        });
-      }
-    };
-    fetchTab();
+      };
+
+      // Initial fetch when sidepanel opens
+      handleTabChange();
+
+      // Event Listeners for user activity
+      chrome.tabs.onActivated.addListener(handleTabChange);
+      chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+        // Only trigger if the URL actually changed
+        if (changeInfo.url) handleTabChange();
+      });
+
+      return () => {
+        chrome.tabs.onActivated.removeListener(handleTabChange);
+        chrome.tabs.onUpdated.removeListener(handleTabChange);
+      };
+    } else {
+      // Local Dev Mock
+      setCurrentTab({
+        title: "Home | Green Card Organization",
+        url: "https://greencardorganization.com",
+      });
+    }
   }, []);
 
+  const updateExtensionUI = (riskLevel: "High" | "Medium" | "Low") => {
+    if (typeof chrome !== "undefined" && chrome.action) {
+      let iconPath = "icons/icon-default.png";
+      let badgeColor = "#06b6d4"; // Default Cyan
+      let badgeText = "";
+
+      if (riskLevel === "High") {
+        iconPath = "icons/icon-warning.png";
+        badgeColor = "#ef4444"; // Red
+        badgeText = "!";
+      } else if (riskLevel === "Low") {
+        iconPath = "icons/icon-safe.png";
+        badgeColor = "#10b981"; // Emerald
+        badgeText = "OK";
+      }
+
+      // 1. Change the actual Icon
+      chrome.action.setIcon({
+        path: {
+          "16": iconPath,
+          "48": iconPath,
+          "128": iconPath,
+        },
+      });
+
+      // 2. Add a Badge for extra visibility
+      chrome.action.setBadgeText({ text: badgeText });
+      chrome.action.setBadgeBackgroundColor({ color: badgeColor });
+    }
+  };
+
   const handleScan = async () => {
-    if (!currentTab?.url) return;
+    if (!currentTab?.url || !currentTab?.id) return;
+
+    const originTabId = currentTab.id;
     setLoading(true);
     setAiText("");
     setResult(null);
 
-    // 1. Get the URLs from the environment configuration
+    const APP_SECRET = import.meta.env.VITE_APP_SECRET;
     const NODE_SERVER = import.meta.env.VITE_NODE_SERVER_URL;
     const PYTHON_SERVER = import.meta.env.VITE_PYTHON_SERVER_URL;
 
     try {
-      let pageContent = "Mock content for local testing.";
+      let pageContent = "No content found.";
       const isExtension = typeof chrome !== "undefined" && chrome.tabs;
 
       if (isExtension) {
-        try {
-          const [tab] = await chrome.tabs.query({
-            active: true,
-            currentWindow: true,
-          });
-          if (tab?.id) {
-            const textResponse = await chrome.tabs.sendMessage(tab.id, {
+        if (
+          currentTab.url.startsWith("chrome://") ||
+          currentTab.url.startsWith("edge://")
+        ) {
+          pageContent = "System page - no content available.";
+        } else {
+          try {
+            const textResponse = await chrome.tabs.sendMessage(originTabId, {
               action: "getPageText",
             });
             pageContent = textResponse?.text || "No content found.";
+          } catch (msgErr) {
+            console.warn("Content script not ready", msgErr);
           }
-        } catch (msgErr) {
-          console.warn("Content script error", msgErr);
         }
       }
 
-      // 2. Use the Node Server environment variable
-      const nodeRes = await axios.post(`${NODE_SERVER}/api/scan`, {
-        url: currentTab.url,
-      });
-      setResult({ ...nodeRes.data });
+      // 1. NODE SCAN
+      const nodeRes = await axios.post(
+        `${NODE_SERVER}/api/scan`,
+        { url: currentTab.url },
+        { headers: { "X-ScamGuard-Secret": APP_SECRET } },
+      );
 
-      // 3. Use the Python Server environment variable
+      // TAB GUARD: Stop if user switched away during Node scan
+      const [activeTab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      if (activeTab?.id !== originTabId) {
+        console.log("Discarding results: User switched tabs.");
+        setLoading(false);
+        return;
+      }
+
+      // TIMESTAMP & UI UPDATE
+      const timestamp = new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
+      setLastScanned(timestamp);
+      setResult({ ...nodeRes.data });
+      updateExtensionUI(nodeRes.data.overallRisk);
+
+      // 2. AI ANALYZE WITH DATA DOSSIER
+      // FIX: Secure hotlinkData extraction to prevent TypeErrors
+      const hotlinkInfo = nodeRes.data.hotlinkData || {};
+
       const pythonStreamResponse = await fetch(
         `${PYTHON_SERVER}/api/ai-analyze`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-ScamGuard-Secret": APP_SECRET,
+          },
           body: JSON.stringify({
             url: currentTab.url,
             page_content: pageContent,
+            dossier: {
+              domain_age: nodeRes.data.age || "Unknown",
+              trustpilot_score: nodeRes.data.trustScore || 0,
+              provider: nodeRes.data.provider || "Unknown",
+              hotlink_alert: !!hotlinkInfo.isHotlinking, // Force boolean
+              stolen_from: hotlinkInfo.details?.[0]?.domain || "None", // Safe array access
+            },
           }),
         },
       );
 
       const reader = pythonStreamResponse.body?.getReader();
       const decoder = new TextDecoder();
+
       while (reader) {
         const { value, done } = await reader.read();
         if (done) break;
+
+        // CONTINUOUS STREAM GUARD
+        const [currentCheck] = await chrome.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        if (currentCheck?.id !== originTabId) break;
+
         setAiText((prev) => prev + decoder.decode(value, { stream: true }));
       }
     } catch (err) {
@@ -138,10 +247,25 @@ export default function App() {
       {/* Results Section */}
       {result ? (
         <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          {/* Grouped Data: Infrastructure & Reputation */}
+          {/* Timestamp Metadata Bar */}
+          <div className="flex justify-between items-center px-1">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+              </span>
+              <span className="text-[9px] font-black text-cyan-500/70 uppercase tracking-widest">
+                Live Data Feed
+              </span>
+            </div>
+            <div className="text-[9px] font-mono text-slate-500 bg-slate-900/50 px-2 py-0.5 rounded border border-slate-800">
+              LAST_SCAN: <span className="text-slate-300">{lastScanned}</span>
+            </div>
+          </div>
+
           <Accordion title="Technical & Community Dossier" icon="📊">
-            {/* Integrity Meter (Sticky Top) */}
-            <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 rounded-2xl p-4 shadow-xl">
+            {/* 1. Spacing added below the Integrity Meter (mb-6) */}
+            <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 rounded-2xl p-4 shadow-xl mb-6">
               <div className="flex justify-between items-end mb-4">
                 <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">
                   Global Integrity Index
@@ -188,78 +312,56 @@ export default function App() {
             </div>
           </Accordion>
 
-          {/* AI Intelligence Section (Scrollable) */}
           <Accordion
             title="Live Behavioral Analysis"
             icon="🧠"
             defaultOpen={true}
           >
-            <div className="max-h-[350px] overflow-y-auto scrollbar-hide pr-1 space-y-4">
-              {/* 1. Dynamic Status Banner */}
+            {/* 3. Styled scrollbar classes added here */}
+            <div className="max-h-[350px] overflow-y-auto pr-1 space-y-4 scrollbar-thin scrollbar-thumb-cyan-500/20 scrollbar-track-transparent hover:scrollbar-thumb-cyan-500/40">
+              {/* 2. Behavioural Analysis Grid Style for Verdict/Score */}
               {aiText.includes("Verdict:") && (
-                <div
-                  className={`p-3 rounded-xl border flex items-center gap-3 transition-colors duration-500 ${
-                    aiText.toLowerCase().includes("safe")
-                      ? "bg-emerald-500/10 border-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.05)]"
-                      : "bg-red-500/10 border-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.05)]"
-                  }`}
-                >
-                  <span className="text-xl">
-                    {aiText.toLowerCase().includes("safe") ? "🛡️" : "⚠️"}
-                  </span>
-                  <div className="flex-1">
-                    <p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">
-                      AI Threat Assessment
+                <div className="grid grid-cols-2 gap-2">
+                  <div
+                    className={`p-3 rounded-xl border flex flex-col justify-center gap-1 ${aiText.toLowerCase().includes("safe") ? "bg-emerald-500/10 border-emerald-500/20" : "bg-red-500/10 border-red-500/20"}`}
+                  >
+                    <p className="text-[8px] font-black uppercase text-slate-500 tracking-widest">
+                      Verdict
                     </p>
                     <p
-                      className={`text-[11px] font-bold uppercase tracking-tight ${
-                        aiText.toLowerCase().includes("safe")
-                          ? "text-emerald-400"
-                          : "text-red-400"
-                      }`}
+                      className={`text-[11px] font-bold uppercase ${aiText.toLowerCase().includes("safe") ? "text-emerald-400" : "text-red-400"}`}
                     >
                       {aiText.toLowerCase().includes("safe")
-                        ? "Verified Secure"
-                        : "Potential Risk Detected"}
+                        ? "🛡️ Verified Secure"
+                        : "⚠️ High Risk"}
                     </p>
                   </div>
-                  <div className="text-right border-l border-white/10 pl-3">
-                    <p className="text-[16px] font-black text-white leading-none">
-                      {aiText.match(/Score:\s*(\d+)/)?.[1] || "--"}
+                  <div className="p-3 rounded-xl border border-slate-800 bg-black/40 flex flex-col justify-center gap-1">
+                    <p className="text-[8px] font-black uppercase text-slate-500 tracking-widest">
+                      AI Trust Score
                     </p>
-                    <p className="text-[7px] text-slate-500 uppercase font-bold tracking-tighter">
-                      Trust Score
+                    <p className="text-[14px] font-black text-white leading-none">
+                      {aiText.match(/Score:\s*(\d+)/)?.[1] || "--"}
+                      <span className="text-[9px] text-slate-600 ml-1">
+                        /100
+                      </span>
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* 2. Structured Markdown Report */}
               <div className="relative bg-black/40 rounded-xl border border-slate-800/60 p-5 shadow-inner min-h-[120px]">
-                <div
-                  className="prose prose-invert max-w-none 
-        {/* Gemini-style spacing & font sizing */}
-        prose-p:text-[12px] prose-p:leading-relaxed prose-p:text-slate-300 prose-p:mb-4
-        prose-headings:text-cyan-400 prose-headings:font-black prose-headings:tracking-tight prose-headings:mt-6 prose-headings:mb-2
-        prose-h3:text-[13px] prose-h3:uppercase prose-h3:tracking-widest
-        {/* List styling */}
-        prose-ul:my-3 prose-ul:list-disc prose-ul:pl-5
-        prose-li:text-[11px] prose-li:mb-1.5 prose-li:text-slate-300
-        {/* Inline code/logic */}
-        prose-code:text-cyan-300 prose-code:bg-cyan-500/10 prose-code:px-1 prose-code:rounded
-        prose-strong:text-white"
-                >
+                <div className="prose prose-invert max-w-none prose-p:text-[12px] prose-p:leading-relaxed prose-p:text-slate-300 prose-p:mb-4 prose-headings:text-cyan-400 prose-headings:font-black prose-headings:tracking-tight prose-headings:mt-6 prose-headings:mb-2 prose-h3:text-[13px] prose-h3:uppercase prose-h3:tracking-widest prose-ul:my-3 prose-ul:list-disc prose-ul:pl-5 prose-li:text-[11px] prose-li:mb-1.5 prose-li:text-slate-300 prose-code:text-cyan-300 prose-code:bg-cyan-500/10 prose-code:px-1 prose-code:rounded prose-strong:text-white">
                   <ReactMarkdown
                     remarkPlugins={[_remarkGfm]}
                     rehypePlugins={[_rehypeRaw]}
                     components={{
-                      // Transform bold text into stylized section labels
                       strong: ({ node, ...props }) => {
                         const content = props.children?.toString() || "";
-                        const isLabel =
-                          /Verdict|Score|Summary|Evidence|Logic|Analysis/i.test(
-                            content,
-                          );
+                        // Verdict and Score are now handled by the grid above, so we can hide them or style them normally if they appear in text
+                        const isLabel = /Summary|Evidence|Logic|Analysis/i.test(
+                          content,
+                        );
                         return (
                           <span
                             className={
@@ -279,14 +381,13 @@ export default function App() {
                   </ReactMarkdown>
                 </div>
 
-                {/* 3. Typing / Pulse Indicator */}
                 {loading && (
                   <div className="flex items-center gap-2 mt-4 px-1">
                     <span className="w-1.5 h-1.5 bg-cyan-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
                     <span className="w-1.5 h-1.5 bg-cyan-500/60 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
                     <span className="w-1.5 h-1.5 bg-cyan-500/30 rounded-full animate-bounce"></span>
                     <span className="text-[9px] font-bold text-cyan-500/50 uppercase tracking-widest ml-1">
-                      Analyzing Stream...
+                      Analyzing...
                     </span>
                   </div>
                 )}
@@ -294,7 +395,6 @@ export default function App() {
             </div>
           </Accordion>
 
-          {/* Critical Warnings */}
           {result.warnings.length > 0 && (
             <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-3 shadow-lg shadow-red-500/5">
               <p className="text-[8px] font-black text-red-500 uppercase mb-2 tracking-widest flex items-center gap-2">
@@ -349,7 +449,7 @@ const Accordion = ({ title, icon, children, defaultOpen = false }: any) => {
         </div>
       </button>
       <div
-        className={`transition-all duration-500 overflow-hidden ${isOpen ? "max-h-[600px] opacity-100 p-4 pt-0" : "max-h-0 opacity-0"}`}
+        className={`transition-all duration-500 overflow-hidden ${isOpen ? "max-h-[800px] opacity-100 p-4 pt-0" : "max-h-0 opacity-0"}`}
       >
         {children}
       </div>

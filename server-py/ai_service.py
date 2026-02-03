@@ -2,10 +2,17 @@ from groq import Groq
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi import Header, HTTPException
 import asyncio
 from pydantic import BaseModel
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 import os
+
+class ScanRequest(BaseModel):
+    url: str
+    page_content: str
+    dossier: Dict[str, Any] = {} # Handles the structured metadata object
 
 app = FastAPI()
 load_dotenv()
@@ -16,7 +23,7 @@ app.add_middleware(
     allow_origins=["*"], 
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "X-ScamGuard-Secret"],
     expose_headers=["*"]
 )
 
@@ -28,42 +35,62 @@ class ScanRequest(BaseModel):
     page_content: str
 
 @app.post("/api/ai-analyze")
-async def analyze_content(request: ScanRequest):
+async def analyze_content(request: ScanRequest, x_scamguard_secret: str = Header(None)):
+
+    dossier = request.dossier
+    
+    # 1. MITIGATE ABUSE: Verify the secret handshake
+    expected_secret = os.getenv("APP_SECRET", "default_fallback_secret")
+    
+    if x_scamguard_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Unauthorized request source.")
+    
     prompt = f"""
-    ### ROLE: You are an Elite Adversarial Cybersecurity Analyst specialized in 2026-era social engineering.
-    ### TASK: Analyze the content from {request.url} for high-sophistication fraud.
+    ### ROLE: Elite Adversarial Cybersecurity Analyst (2026 Specialization)
+    ### CONTEXT: You are analyzing {request.url}. 
+    
+    ### TECHNICAL DOSSIER (GROUND TRUTH):
+    The following infrastructure data was captured via server-side fingerprinting. Use this to verify or debunk the claims made in the page content:
+    - Domain Age: {dossier.get('domain_age', 'Unknown')}
+    - Trustpilot Score: {dossier.get('trustpilot_score', 'N/A')}/5
+    - Hosting Provider: {dossier.get('provider', 'Unknown')}
+    - Asset Hotlinking Alert: {dossier.get('hotlink_alert', 'False')}
+    - Assets Stolen From: {dossier.get('stolen_from', 'None')}
 
-    ### 2026 THREAT LANDSCAPE CHECKLIST:
-    1. CLICKFIX PATTERNS: Are there instructions to "copy-paste" code into a terminal or browser console to "fix" an error?
-    2. STRUCTURAL DECEPTION: Are there empty <a> tags, invisible overlays, or "CAPTCHAs" that require user interaction to reveal hidden links?
-    3. SENSE OF URGENCY: Does it claim a "system breach," "unauthorized payment," or "security update" is required within minutes?
-    4. UNUSUAL ACTIONS: Does it ask for OAuth permissions, MFA codes, or to move the conversation to an unencrypted platform?
+    ### PAGE CONTENT TO ANALYZE:
+    {request.page_content[:6000]}
 
-    ### CONTENT TO SCRUTINIZE:
-    {request.page_content[:8000]}
+    ### ADVERSARIAL ANALYSIS INSTRUCTIONS:
+    1. CROSS-REFERENCE: Does the 'Page Content' claim to be a reputable brand (e.g., Amazon, Chase, Microsoft) while the 'Assets Stolen From' or 'Domain Age' indicates it is a clone?
+    2. INFRASTRUCTURE MISMATCH: If 'Hotlink Alert' is TRUE, assume the site is a phishing template mirroring a legitimate service.
+    3. NEW DOMAIN BIAS: If 'Domain Age' is < 6 months, treat any 'Sense of Urgency' or 'Payment Requests' as high-probability fraud.
+    4. CLICKFIX/SOCIAL ENGINEERING: Look for instructions asking the user to run scripts or bypass browser security.
 
     ### RESPONSE FORMAT (STRICT):
     **Verdict:** [Safe | Suspicious | Malicious]
-    **Score:** [0-100] (0 is highly dangerous)
+    **Score:** [0-100] (0 is critical danger)
 
-    **Analysis Summary:** (One concise sentence on the final conclusion.)
+    **Analysis Summary:** (One concise sentence. Example: "Infrastructure mismatch detected: Site claims to be [Brand] but steals assets from [Domain].")
 
     **Evidence Found:**
-    - [Bullet point of technical red flag 1]
-    - [Bullet point of technical red flag 2]
+    - [Infrastructure Flag]: Compare Dossier data to Page Content.
+    - [Behavioral Flag]: Specific social engineering tactics found in text.
 
     **Technical Verdict Logic:**
-    (Explain your reasoning step-by-step. If you see "Mock content," acknowledge it but explain what specific behaviors you would flag in a real scenario to educate the user.)
+    (Explain the correlation between the Technical Dossier and the Page Content. Focus on why the infrastructure does or does not support the legitimacy of the site's claims. Max 100 words.)
     """
     
     async def stream_generator():
         try:
             chat_completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama3-8b-8192",  # cheaper model for development 
+                # model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "system", "content": "You are a cybersecurity expert."},
                     {"role": "user", "content": prompt}
                 ],
+                temperature=0.5,
+                max_tokens=150,  # Hard limit to prevent long, expensive responses
                 stream=True,
             )
 
