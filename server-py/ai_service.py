@@ -81,8 +81,8 @@ async def analyze_content(request: ScanRequest, x_scamguard_secret: str = Header
     async def stream_generator():
         try:
             chat_completion = client.chat.completions.create(
-                model="llama3-8b-8192",  # cheaper model for development 
-                # model="llama-3.3-70b-versatile",
+                # model="llama3-8b-8192",  # cheaper model for development 
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "system", "content": "You are a cybersecurity expert."},
                     {"role": "user", "content": prompt}
