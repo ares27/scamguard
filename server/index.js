@@ -2,7 +2,11 @@ const express = require("express");
 const cors = require("cors");
 const dns = require("dns").promises;
 const axios = require("axios");
-const { getTrustpilotData, getDomainAge } = require("./scanner");
+const {
+  getTrustpilotData,
+  getDomainAge,
+  detectHotlinking,
+} = require("./scanner");
 
 const app = express();
 app.use(cors());
@@ -10,10 +14,21 @@ app.use(express.json());
 
 app.post("/api/scan", async (req, res) => {
   const { url } = req.body;
-  // 1. Fetch HTML once for all analysis
-  const { data: htmlBody } = await axios
-    .get(url, { timeout: 5000 })
-    .catch(() => ({ data: "" }));
+
+  // 1. Fetch HTML safely - Move inside try/catch to handle malformed URLs
+  let htmlBody = "";
+  try {
+    const response = await axios.get(url, {
+      timeout: 5000,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+    });
+    htmlBody = response.data;
+  } catch (e) {
+    console.warn("HTML fetch failed, proceeding with infrastructure only.");
+  }
 
   try {
     const domain = new URL(url).hostname.replace("www.", "");
@@ -27,7 +42,6 @@ app.post("/api/scan", async (req, res) => {
       const lookup = await dns.lookup(domain);
       ip = lookup.address;
 
-      // Fetch Geo and ISP data (using ip-api.com - free for dev)
       const geoResponse = await axios.get(`http://ip-api.com/json/${ip}`);
       if (geoResponse.data.status === "success") {
         country = geoResponse.data.countryCode;
@@ -37,31 +51,33 @@ app.post("/api/scan", async (req, res) => {
       console.error("Infrastructure lookup failed:", infraError.message);
     }
 
-    // 2. Run Scrapers (Trustpilot + WHOIS)
-    const [trustData, age] = await Promise.all([
+    // 2. Run Scrapers - FIXED: Added hotlinkData to destructuring
+    const [trustData, age, hotlinkData] = await Promise.all([
       getTrustpilotData(domain),
       getDomainAge(domain),
       detectHotlinking(url, htmlBody),
     ]);
 
     // 3. Technical vs Social Risk Logic
-    const technicalRisk = "Low"; // Usually Low for Cloudflare-backed sites
+    const technicalRisk = "Low";
     let overallRisk = "Low";
     let warnings = [];
 
-    // Prioritize Social Score for the "High Risk" verdict
-    if (hotlinkData.isHotlinking) {
+    // 4. Guard: Check hotlinkData before accessing details
+    if (hotlinkData?.isHotlinking && hotlinkData.details?.[0]) {
+      overallRisk = "High"; // Hotlinking is a high-risk technical signal
       warnings.push(
         `Infrastructure Alert: This site is pulling assets from ${hotlinkData.details[0].domain}. This is typical of cloned phishing sites.`,
       );
     }
+
     if (trustData.score > 0 && trustData.score < 2.5) {
       overallRisk = "High";
       warnings.push(
         `Extreme Caution: Low social trust score of ${trustData.score}/5 detected.`,
       );
     } else if (trustData.reviews < 10) {
-      overallRisk = "Medium";
+      if (overallRisk !== "High") overallRisk = "Medium";
       warnings.push("Warning: Limited review history found.");
     }
 
@@ -71,19 +87,21 @@ app.post("/api/scan", async (req, res) => {
       ip,
       provider,
       country,
-      security: "Valid SSL certificate", // SSL check logic can be added later
+      security: "Valid SSL certificate",
       technicalRisk,
       overallRisk,
       trustScore: trustData.score,
       reviews: trustData.reviews,
       age,
-      malicious: "None Detected",
-      hotlinkData,
+      malicious: hotlinkData?.isHotlinking
+        ? "Potential Clone"
+        : "None Detected",
+      hotlinkData: hotlinkData || { isHotlinking: false, details: [] },
       warnings,
     });
   } catch (error) {
     console.error("API Error:", error);
-    res.status(500).json({ error: "Scan failed" });
+    res.status(500).json({ error: "Scan failed", details: error.message });
   }
 });
 

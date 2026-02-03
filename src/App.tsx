@@ -153,7 +153,7 @@ export default function App() {
 
       // 2. AI ANALYZE WITH DATA DOSSIER
       // FIX: Secure hotlinkData extraction to prevent TypeErrors
-      const hotlinkInfo = nodeRes.data.hotlinkData || {};
+      // const hotlinkInfo = nodeRes.data.hotlinkData || {};
 
       const pythonStreamResponse = await fetch(
         `${PYTHON_SERVER}/api/ai-analyze`,
@@ -167,11 +167,12 @@ export default function App() {
             url: currentTab.url,
             page_content: pageContent,
             dossier: {
-              domain_age: nodeRes.data.age || "Unknown",
-              trustpilot_score: nodeRes.data.trustScore || 0,
-              provider: nodeRes.data.provider || "Unknown",
-              hotlink_alert: !!hotlinkInfo.isHotlinking, // Force boolean
-              stolen_from: hotlinkInfo.details?.[0]?.domain || "None", // Safe array access
+              domain_age: nodeRes.data?.age || "Unknown",
+              trustpilot_score: nodeRes.data?.trustScore || 0,
+              provider: nodeRes.data?.provider || "Unknown",
+              hotlink_alert: nodeRes.data?.hotlinkData?.isHotlinking || false,
+              stolen_from:
+                nodeRes.data?.hotlinkData?.details?.[0]?.domain || "None",
             },
           }),
         },
