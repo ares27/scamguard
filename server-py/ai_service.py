@@ -9,13 +9,15 @@ from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 import os
 
+
+
+load_dotenv()
+app = FastAPI()
+
 class ScanRequest(BaseModel):
     url: str
     page_content: str
     dossier: Dict[str, Any] = {} # Handles the structured metadata object
-
-app = FastAPI()
-load_dotenv()
 
 # --- CORS CONFIGURATION ---
 app.add_middleware(
@@ -29,10 +31,6 @@ app.add_middleware(
 
 # Initialize Groq Client
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-class ScanRequest(BaseModel):
-    url: str
-    page_content: str
 
 @app.post("/api/ai-analyze")
 async def analyze_content(request: ScanRequest, x_scamguard_secret: str = Header(None)):
