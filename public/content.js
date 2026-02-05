@@ -1,7 +1,11 @@
-// content.js
-console.log("ScamGuard Content Script Active"); // Debugging: Check if this appears in the Web Console
-
+console.log("ScamGuard Content Script Active");
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  // Ping check
+  if (request.action === "PING") {
+    sendResponse({ status: "ready" });
+    return true;
+  }
+
   if (request.action === "getPageText") {
     try {
       // Improved selector: Try to get main content first, fallback to body
@@ -9,7 +13,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       const pageText = mainContent.innerText
         .replace(/\s+/g, " ")
         .trim()
-        .slice(0, 10000); // 2026 era LLMs can handle 10k easily
+        .slice(0, 10000);
 
       sendResponse({ text: pageText, success: true });
     } catch (error) {

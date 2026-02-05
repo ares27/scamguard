@@ -102,59 +102,73 @@ export default function App() {
 
     try {
       let pageContent = "No content found.";
-      const isExtension = typeof chrome !== "undefined" && chrome.tabs;
 
-      if (isExtension) {
-        if (
+      // 1. SECURE DYNAMIC INJECTION
+      if (typeof chrome !== "undefined" && chrome.scripting) {
+        const isSystemPage =
           currentTab.url.startsWith("chrome://") ||
-          currentTab.url.startsWith("edge://")
-        ) {
-          pageContent = "System page - no content available.";
-        } else {
+          currentTab.url.startsWith("edge://");
+
+        if (!isSystemPage) {
           try {
-            const textResponse = await chrome.tabs.sendMessage(originTabId, {
-              action: "getPageText",
+            // Force inject the content script
+            await chrome.scripting.executeScript({
+              target: { tabId: originTabId },
+              files: ["content.js"],
             });
-            pageContent = textResponse?.text || "No content found.";
+
+            // RELIABLE CHECK: Ping the script until it answers (up to 2 seconds)
+            let isReady = false;
+            for (let i = 0; i < 10; i++) {
+              try {
+                await chrome.tabs.sendMessage(originTabId, { action: "PING" });
+                isReady = true;
+                break;
+              } catch (e) {
+                await new Promise((r) => setTimeout(r, 200));
+              }
+            }
+
+            if (isReady) {
+              const textResponse = await chrome.tabs.sendMessage(originTabId, {
+                action: "getPageText",
+              });
+              pageContent = textResponse?.text || "No content found.";
+            } else {
+              pageContent = "Error: Content script failed to initialize.";
+            }
           } catch (msgErr) {
-            console.warn("Content script not ready", msgErr);
+            console.error("Injection/Message failed:", msgErr);
+            pageContent = "Error: Permission denied or script blocked.";
           }
+        } else {
+          pageContent = "System page - no content available.";
         }
       }
 
-      // 1. NODE SCAN
+      // 2. NODE SCAN
       const nodeRes = await axios.post(
         `${NODE_SERVER}/api/scan`,
         { url: currentTab.url },
         { headers: { "X-ScamGuard-Secret": APP_SECRET } },
       );
 
-      // TAB GUARD: Stop if user switched away during Node scan
+      // TAB GUARD
       const [activeTab] = await chrome.tabs.query({
         active: true,
         currentWindow: true,
       });
       if (activeTab?.id !== originTabId) {
-        console.log("Discarding results: User switched tabs.");
         setLoading(false);
         return;
       }
 
-      // TIMESTAMP & UI UPDATE
-      const timestamp = new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      });
-      setLastScanned(timestamp);
       setResult({ ...nodeRes.data });
-      updateExtensionUI(nodeRes.data.overallRisk);
+      setLastScanned(new Date().toLocaleTimeString());
+      if (nodeRes.data?.overallRisk)
+        updateExtensionUI(nodeRes.data.overallRisk);
 
-      // 2. AI ANALYZE WITH DATA DOSSIER
-      // FIX: Secure hotlinkData extraction to prevent TypeErrors
-      // const hotlinkInfo = nodeRes.data.hotlinkData || {};
-
+      // 3. PYTHON AI ANALYSIS
       const pythonStreamResponse = await fetch(
         `${PYTHON_SERVER}/api/ai-analyze`,
         {
@@ -184,14 +198,11 @@ export default function App() {
       while (reader) {
         const { value, done } = await reader.read();
         if (done) break;
-
-        // CONTINUOUS STREAM GUARD
         const [currentCheck] = await chrome.tabs.query({
           active: true,
           currentWindow: true,
         });
         if (currentCheck?.id !== originTabId) break;
-
         setAiText((prev) => prev + decoder.decode(value, { stream: true }));
       }
     } catch (err) {

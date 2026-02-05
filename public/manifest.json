@@ -3,27 +3,20 @@
   "name": "ScamGuard",
   "version": "1.0.0",
   "description": "AI-Powered Cybersecurity website Behavioural Analyst",
-  "permissions": ["sidePanel", "tabs", "scripting", "activeTab", "storage"],
+  "permissions": ["sidePanel", "tabs", "activeTab", "scripting"],
   "icons": {
     "16": "icons/favicon-16x16.png",
     "32": "icons/favicon-32x32.png",
     "128": "icons/favicon-128x128.png"
   },
+  "action": {
+    "default_title": "Open ScamGuard"
+  },
   "side_panel": {
     "default_path": "index.html"
   },
-  "action": {
-    "default_popup": "index.html",
-    "default_title": "Click to open ScamGuard"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "host_permissions": [
+    "https://*/*",
     "http://localhost:5000/*",
     "http://localhost:8000/*",
     "https://scamguard-expressapi.onrender.com/*",
