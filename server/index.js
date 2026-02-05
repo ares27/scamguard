@@ -9,7 +9,12 @@ const {
 } = require("./scanner");
 
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin: "*", // For local dev, or your specific extension ID
+    allowedHeaders: ["Content-Type", "X-ScamGuard-Secret"], // 👈 Must include your custom header
+  }),
+);
 app.use(express.json());
 
 app.post("/api/scan", async (req, res) => {

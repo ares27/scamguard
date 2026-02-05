@@ -17,7 +17,7 @@ app = FastAPI()
 class ScanRequest(BaseModel):
     url: str
     page_content: str
-    dossier: Dict[str, Any] = {} # Handles the structured metadata object
+    dossier: Dict[str, Any] = {} 
 
 # --- CORS CONFIGURATION ---
 app.add_middleware(
@@ -63,7 +63,8 @@ async def analyze_content(request: ScanRequest, x_scamguard_secret: str = Header
     2. INFRASTRUCTURE MISMATCH: If 'Hotlink Alert' is TRUE, assume the site is a phishing template mirroring a legitimate service.
     3. NEW DOMAIN BIAS: If 'Domain Age' is < 6 months, treat any 'Sense of Urgency' or 'Payment Requests' as high-probability fraud.
     4. CLICKFIX/SOCIAL ENGINEERING: Look for instructions asking the user to run scripts or bypass browser security.
-
+    5. Limit your analysis to a maximum of 150 words and focus on the most critical red flags. Prioritize infrastructure evidence over behavioral cues, but use both to form a holistic verdict.
+    
     ### RESPONSE FORMAT (STRICT):
     **Verdict:** [Safe | Suspicious | Malicious]
     **Score:** [0-100] (0 is critical danger)
@@ -75,7 +76,7 @@ async def analyze_content(request: ScanRequest, x_scamguard_secret: str = Header
     - [Behavioral Flag]: Specific social engineering tactics found in text.
 
     **Technical Verdict Logic:**
-    (Explain the correlation between the Technical Dossier and the Page Content. Focus on why the infrastructure does or does not support the legitimacy of the site's claims. Max 100 words.)
+    (Explain the correlation between the Technical Dossier and the Page Content. Focus on why the infrastructure does or does not support the legitimacy of the site's claims.)
     """
     
     async def stream_generator():
@@ -88,8 +89,8 @@ async def analyze_content(request: ScanRequest, x_scamguard_secret: str = Header
                     {"role": "system", "content": "You are a cybersecurity expert."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.5,
-                max_tokens=150,  # Hard limit to prevent long, expensive responses
+                temperature=0.3,
+                max_tokens=250,  
                 stream=True,
             )
 
@@ -111,7 +112,6 @@ async def analyze_content(request: ScanRequest, x_scamguard_secret: str = Header
         media_type="text/event-stream",
         headers={
             "X-Content-Type-Options": "nosniff",
-            # "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Transfer-Encoding": "chunked", 
             "Access-Control-Allow-Origin": "*", 

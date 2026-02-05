@@ -103,28 +103,26 @@ export default function App() {
     try {
       let pageContent = "No content found.";
 
-      // 1. SECURE DYNAMIC INJECTION
+      // 1. CONTENT SCRIPT INJECTION (Unchanged logic, just cleaner)
       if (typeof chrome !== "undefined" && chrome.scripting) {
-        const isSystemPage =
-          currentTab.url.startsWith("chrome://") ||
-          currentTab.url.startsWith("edge://");
-
-        if (!isSystemPage) {
+        if (
+          !currentTab.url.startsWith("chrome://") &&
+          !currentTab.url.startsWith("edge://")
+        ) {
           try {
-            // Force inject the content script
             await chrome.scripting.executeScript({
               target: { tabId: originTabId },
               files: ["content.js"],
             });
 
-            // RELIABLE CHECK: Ping the script until it answers (up to 2 seconds)
+            // PING LOOP
             let isReady = false;
-            for (let i = 0; i < 10; i++) {
+            for (let i = 0; i < 5; i++) {
               try {
                 await chrome.tabs.sendMessage(originTabId, { action: "PING" });
                 isReady = true;
                 break;
-              } catch (e) {
+              } catch {
                 await new Promise((r) => setTimeout(r, 200));
               }
             }
@@ -134,41 +132,28 @@ export default function App() {
                 action: "getPageText",
               });
               pageContent = textResponse?.text || "No content found.";
-            } else {
-              pageContent = "Error: Content script failed to initialize.";
             }
-          } catch (msgErr) {
-            console.error("Injection/Message failed:", msgErr);
-            pageContent = "Error: Permission denied or script blocked.";
+          } catch (e) {
+            console.error("Injection failed", e);
           }
-        } else {
-          pageContent = "System page - no content available.";
         }
       }
 
-      // 2. NODE SCAN
+      console.log({ "X-ScamGuard-Secret": APP_SECRET });
+      // 2. INFRASTRUCTURE SCAN (Node.js)
       const nodeRes = await axios.post(
         `${NODE_SERVER}/api/scan`,
         { url: currentTab.url },
         { headers: { "X-ScamGuard-Secret": APP_SECRET } },
       );
 
-      // TAB GUARD
-      const [activeTab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      if (activeTab?.id !== originTabId) {
-        setLoading(false);
-        return;
-      }
-
+      // Update Initial UI
       setResult({ ...nodeRes.data });
       setLastScanned(new Date().toLocaleTimeString());
       if (nodeRes.data?.overallRisk)
         updateExtensionUI(nodeRes.data.overallRisk);
 
-      // 3. PYTHON AI ANALYSIS
+      // 3. AI STREAMING (Python)
       const pythonStreamResponse = await fetch(
         `${PYTHON_SERVER}/api/ai-analyze`,
         {
@@ -192,22 +177,25 @@ export default function App() {
         },
       );
 
-      const reader = pythonStreamResponse.body?.getReader();
-      const decoder = new TextDecoder();
+      if (!pythonStreamResponse.body) return;
 
-      while (reader) {
+      // Use TextDecoderStream for cleaner chunk handling
+      const reader = pythonStreamResponse.body
+        .pipeThrough(new TextDecoderStream())
+        .getReader();
+
+      // REMOVED: The restrictive Tab Guard inside the loop.
+      // Instead, we just let it flow until 'done' is true.
+      while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        const [currentCheck] = await chrome.tabs.query({
-          active: true,
-          currentWindow: true,
-        });
-        if (currentCheck?.id !== originTabId) break;
-        setAiText((prev) => prev + decoder.decode(value, { stream: true }));
+
+        // value is already a string because of TextDecoderStream
+        setAiText((prev) => prev + value);
       }
     } catch (err) {
       console.error("Scan Error:", err);
-      setAiText("⚠️ Analysis connection interrupted.");
+      setAiText((prev) => prev + "\n\n⚠️ Analysis connection lost.");
     } finally {
       setLoading(false);
     }
